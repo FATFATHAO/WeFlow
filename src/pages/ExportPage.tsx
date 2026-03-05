@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { createPortal } from 'react-dom'
@@ -1296,6 +1296,7 @@ function ExportPage() {
   const contactsLoadTimeoutMsRef = useRef(DEFAULT_CONTACTS_LOAD_TIMEOUT_MS)
   const contactsAvatarCacheRef = useRef<Record<string, configService.ContactsAvatarCacheEntry>>({})
   const contactsVirtuosoRef = useRef<VirtuosoHandle | null>(null)
+  const sessionTableSectionRef = useRef<HTMLDivElement | null>(null)
   const detailRequestSeqRef = useRef(0)
   const sessionsRef = useRef<SessionRow[]>([])
   const contactsListSizeRef = useRef(0)
@@ -3939,6 +3940,23 @@ function ExportPage() {
     contactsVirtuosoRef.current?.scrollToIndex({ index: 0, align: 'start', behavior: 'smooth' })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
+  const handleContactsListWheelCapture = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const deltaY = event.deltaY
+    if (!deltaY) return
+    const sectionTop = sessionTableSectionRef.current?.getBoundingClientRect().top ?? 0
+    const sectionPinned = sectionTop <= 8
+
+    if (deltaY > 0 && !sectionPinned) {
+      event.preventDefault()
+      window.scrollBy({ top: deltaY, behavior: 'auto' })
+      return
+    }
+
+    if (deltaY < 0 && isContactsListAtTop) {
+      event.preventDefault()
+      window.scrollBy({ top: deltaY, behavior: 'auto' })
+    }
+  }, [isContactsListAtTop])
   useEffect(() => {
     if (hasFilteredContacts) return
     setIsContactsListAtTop(true)
@@ -4107,7 +4125,7 @@ function ExportPage() {
           ]}
         />
       </div>
-      <div className="session-table-section">
+      <div className="session-table-section" ref={sessionTableSectionRef}>
         <div className="session-table-layout">
           <div className="table-wrap">
             <div className="session-table-sticky">
@@ -4249,7 +4267,10 @@ function ExportPage() {
                 <span>暂无联系人</span>
               </div>
             ) : (
-              <div className="contacts-list">
+              <div
+                className="contacts-list"
+                onWheelCapture={handleContactsListWheelCapture}
+              >
                 <Virtuoso
                   ref={contactsVirtuosoRef}
                   className="contacts-virtuoso"
