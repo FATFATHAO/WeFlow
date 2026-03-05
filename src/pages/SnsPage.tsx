@@ -113,12 +113,14 @@ export default function SnsPage() {
     const [hasNewer, setHasNewer] = useState(false)
     const [loadingNewer, setLoadingNewer] = useState(false)
     const postsRef = useRef<SnsPost[]>([])
+    const contactsRef = useRef<Contact[]>([])
     const overviewStatsRef = useRef<SnsOverviewStats>(overviewStats)
     const overviewStatsStatusRef = useRef<OverviewStatsStatus>(overviewStatsStatus)
     const selectedUsernamesRef = useRef<string[]>(selectedUsernames)
     const searchKeywordRef = useRef(searchKeyword)
     const jumpTargetDateRef = useRef<Date | undefined>(jumpTargetDate)
     const cacheScopeKeyRef = useRef('')
+    const snsUserPostCountsCacheScopeKeyRef = useRef('')
     const scrollAdjustmentRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
     const contactsLoadTokenRef = useRef(0)
     const contactsCountHydrationTokenRef = useRef(0)
@@ -132,6 +134,9 @@ export default function SnsPage() {
     useEffect(() => {
         postsRef.current = posts
     }, [posts])
+    useEffect(() => {
+        contactsRef.current = contacts
+    }, [contacts])
     useEffect(() => {
         overviewStatsRef.current = overviewStats
     }, [overviewStats])
@@ -219,6 +224,21 @@ export default function SnsPage() {
         const wxid = (await configService.getMyWxid())?.trim() || SNS_PAGE_CACHE_SCOPE_FALLBACK
         const scopeKey = `sns_page:${wxid}`
         cacheScopeKeyRef.current = scopeKey
+        return scopeKey
+    }, [])
+
+    const ensureSnsUserPostCountsCacheScopeKey = useCallback(async () => {
+        if (snsUserPostCountsCacheScopeKeyRef.current) return snsUserPostCountsCacheScopeKeyRef.current
+        const [wxidRaw, dbPathRaw] = await Promise.all([
+            configService.getMyWxid(),
+            configService.getDbPath()
+        ])
+        const wxid = String(wxidRaw || '').trim()
+        const dbPath = String(dbPathRaw || '').trim()
+        const scopeKey = (dbPath || wxid)
+            ? `${dbPath}::${wxid}`
+            : 'default'
+        snsUserPostCountsCacheScopeKeyRef.current = scopeKey
         return scopeKey
     }, [])
 
@@ -484,36 +504,47 @@ export default function SnsPage() {
         }
     }, [])
 
-    const hydrateContactPostCounts = useCallback(async (usernames: string[]) => {
+    const hydrateContactPostCounts = useCallback(async (usernames: string[], options?: { force?: boolean }) => {
+        const force = options?.force === true
         const targets = usernames
             .map((username) => String(username || '').trim())
             .filter(Boolean)
         stopContactsCountHydration(true)
         if (targets.length === 0) return
 
+        const readySet = new Set(
+            contactsRef.current
+                .filter((contact) => contact.postCountStatus === 'ready' && typeof contact.postCount === 'number')
+                .map((contact) => contact.username)
+        )
+        const pendingTargets = force ? targets : targets.filter((username) => !readySet.has(username))
         const runToken = ++contactsCountHydrationTokenRef.current
         const totalTargets = targets.length
-        const targetSet = new Set(targets)
+        const targetSet = new Set(pendingTargets)
 
-        setContacts((prev) => {
-            let changed = false
-            const next = prev.map((contact) => {
-                if (!targetSet.has(contact.username)) return contact
-                if (contact.postCountStatus === 'loading' && typeof contact.postCount !== 'number') return contact
-                changed = true
-                return {
-                    ...contact,
-                    postCount: undefined,
-                    postCountStatus: 'loading' as ContactPostCountStatus
-                }
+        if (pendingTargets.length > 0) {
+            setContacts((prev) => {
+                let changed = false
+                const next = prev.map((contact) => {
+                    if (!targetSet.has(contact.username)) return contact
+                    if (contact.postCountStatus === 'loading' && typeof contact.postCount !== 'number') return contact
+                    changed = true
+                    return {
+                        ...contact,
+                        postCount: force ? undefined : contact.postCount,
+                        postCountStatus: 'loading' as ContactPostCountStatus
+                    }
+                })
+                return changed ? sortContactsForRanking(next) : prev
             })
-            return changed ? sortContactsForRanking(next) : prev
-        })
+        }
+        const preResolved = Math.max(0, totalTargets - pendingTargets.length)
         setContactsCountProgress({
-            resolved: 0,
+            resolved: preResolved,
             total: totalTargets,
-            running: true
+            running: pendingTargets.length > 0
         })
+        if (pendingTargets.length === 0) return
 
         let normalizedCounts: Record<string, number> = {}
         try {
@@ -523,17 +554,25 @@ export default function SnsPage() {
                 normalizedCounts = Object.fromEntries(
                     Object.entries(result.counts).map(([username, value]) => [username, normalizePostCount(value)])
                 )
+                void (async () => {
+                    try {
+                        const scopeKey = await ensureSnsUserPostCountsCacheScopeKey()
+                        await configService.setExportSnsUserPostCountsCache(scopeKey, normalizedCounts)
+                    } catch (cacheError) {
+                        console.error('Failed to persist SNS user post counts cache:', cacheError)
+                    }
+                })()
             }
         } catch (error) {
             console.error('Failed to load contact post counts:', error)
         }
 
-        let resolved = 0
+        let resolved = preResolved
         let cursor = 0
         const applyBatch = () => {
             if (runToken !== contactsCountHydrationTokenRef.current) return
 
-            const batch = targets.slice(cursor, cursor + CONTACT_COUNT_BATCH_SIZE)
+            const batch = pendingTargets.slice(cursor, cursor + CONTACT_COUNT_BATCH_SIZE)
             if (batch.length === 0) {
                 setContactsCountProgress({
                     resolved: totalTargets,
@@ -585,6 +624,9 @@ export default function SnsPage() {
         stopContactsCountHydration(true)
         setContactsLoading(true)
         try {
+            const snsPostCountsScopeKey = await ensureSnsUserPostCountsCacheScopeKey()
+            const cachedPostCountsItem = await configService.getExportSnsUserPostCountsCache(snsPostCountsScopeKey)
+            const cachedPostCounts = cachedPostCountsItem?.counts || {}
             const [contactsResult, sessionsResult] = await Promise.all([
                 window.electronAPI.chat.getContacts(),
                 window.electronAPI.chat.getSessions()
@@ -610,14 +652,16 @@ export default function SnsPage() {
             if (contactsResult.success && contactsResult.contacts) {
                 for (const c of contactsResult.contacts) {
                     if (c.type === 'friend' || c.type === 'former_friend') {
+                        const cachedCount = cachedPostCounts[c.username]
+                        const hasCachedCount = typeof cachedCount === 'number' && Number.isFinite(cachedCount)
                         contactMap.set(c.username, {
                             username: c.username,
                             displayName: c.displayName,
                             avatarUrl: c.avatarUrl,
                             type: c.type === 'former_friend' ? 'former_friend' : 'friend',
                             lastSessionTimestamp: Number(sessionTimestampMap.get(c.username) || 0),
-                            postCount: undefined,
-                            postCountStatus: 'idle'
+                            postCount: hasCachedCount ? Math.max(0, Math.floor(cachedCount)) : undefined,
+                            postCountStatus: hasCachedCount ? 'ready' : 'idle'
                         })
                     }
                 }
@@ -668,7 +712,7 @@ export default function SnsPage() {
                 setContactsLoading(false)
             }
         }
-    }, [hydrateContactPostCounts, sortContactsForRanking, stopContactsCountHydration])
+    }, [ensureSnsUserPostCountsCacheScopeKey, hydrateContactPostCounts, sortContactsForRanking, stopContactsCountHydration])
 
     const closeAuthorTimeline = useCallback(() => {
         authorTimelineRequestTokenRef.current += 1

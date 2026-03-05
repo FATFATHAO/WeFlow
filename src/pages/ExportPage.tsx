@@ -2000,6 +2000,17 @@ function ExportPage() {
         const value = Number(rawCount)
         normalizedCounts[username] = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
       }
+
+      void (async () => {
+        try {
+          const scopeKey = exportCacheScopeReadyRef.current
+            ? exportCacheScopeRef.current
+            : await ensureExportCacheScope()
+          await configService.setExportSnsUserPostCountsCache(scopeKey, normalizedCounts)
+        } catch (cacheError) {
+          console.error('写入导出页朋友圈条数缓存失败:', cacheError)
+        }
+      })()
     } catch (error) {
       console.error('加载朋友圈用户条数失败:', error)
       if (runToken !== snsUserPostCountsHydrationTokenRef.current) return
@@ -2040,7 +2051,7 @@ function ExportPage() {
     }
 
     applyBatch()
-  }, [patchSessionLoadTraceStage, snsUserPostCountsStatus])
+  }, [ensureExportCacheScope, patchSessionLoadTraceStage, snsUserPostCountsStatus])
 
   const loadSessionSnsTimelinePosts = useCallback(async (target: SessionSnsTimelineTarget, options?: { reset?: boolean }) => {
     const reset = Boolean(options?.reset)
