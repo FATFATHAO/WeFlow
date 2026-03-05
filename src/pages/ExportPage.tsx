@@ -6112,7 +6112,7 @@ function ExportPage() {
                               {sessionSnsRankMode === 'likes' ? '暂无点赞数据' : '暂无评论数据'}
                             </div>
                           ) : (
-                            sessionSnsActiveRankings.slice(0, 10).map((item, index) => (
+                            sessionSnsActiveRankings.slice(0, 15).map((item, index) => (
                               <div className="sns-dialog-rank-row" key={`${sessionSnsRankMode}-${item.name}`}>
                                 <span className="sns-dialog-rank-index">{index + 1}</span>
                                 <span className="sns-dialog-rank-name" title={item.name}>{item.name}</span>
