@@ -3077,21 +3077,76 @@
 
 .media-check-grid {
   margin-top: 10px;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(100px, 1fr));
-  gap: 8px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
 
   label {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 6px;
     font-size: 12px;
     color: var(--text-primary);
+    white-space: nowrap;
   }
 
   input[type='checkbox'] {
     accent-color: var(--primary);
   }
+}
+
+.dialog-switch-row {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.dialog-switch-copy {
+  min-width: 0;
+
+  h4 {
+    margin: 0;
+  }
+
+  .format-note {
+    margin-top: 4px;
+    margin-bottom: 0;
+  }
+}
+
+.dialog-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 46px;
+  height: 26px;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 45%, transparent);
+  cursor: pointer;
+  transition: background 0.2s ease;
+
+  &.on {
+    background: var(--primary);
+  }
+}
+
+.dialog-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s ease;
+}
+
+.dialog-switch.on .dialog-switch-thumb {
+  transform: translateX(20px);
 }
 
 .display-name-options {
@@ -3481,7 +3536,7 @@
   }
 
   .media-check-grid {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
+    gap: 8px 12px;
   }
 }
 
@@ -3514,6 +3569,10 @@
     align-self: auto;
     width: 100%;
     justify-content: space-between;
+  }
+
+  .dialog-switch-row {
+    align-items: flex-start;
   }
 
   .export-defaults-modal {

@@ -6224,13 +6224,32 @@ function ExportPage() {
                         <label><input type="checkbox" checked={options.exportVoices} onChange={event => setOptions(prev => ({ ...prev, exportVoices: event.target.checked }))} /> 语音</label>
                         <label><input type="checkbox" checked={options.exportVideos} onChange={event => setOptions(prev => ({ ...prev, exportVideos: event.target.checked }))} /> 视频</label>
                         <label><input type="checkbox" checked={options.exportEmojis} onChange={event => setOptions(prev => ({ ...prev, exportEmojis: event.target.checked }))} /> 表情包</label>
-                        <label><input type="checkbox" checked={options.exportVoiceAsText} onChange={event => setOptions(prev => ({ ...prev, exportVoiceAsText: event.target.checked }))} /> 语音转文字</label>
                       </>
                     )}
                   </div>
                   {exportDialog.scope === 'sns' && (
                     <div className="format-note">全不勾选时仅导出文本信息，不导出媒体文件。</div>
                   )}
+                </div>
+              )}
+
+              {isSessionScopeDialog && (
+                <div className="dialog-section">
+                  <div className="dialog-switch-row">
+                    <div className="dialog-switch-copy">
+                      <h4>语音转文字</h4>
+                      <div className="format-note">默认状态跟随更多导出设置中的语音转文字开关。</div>
+                    </div>
+                    <button
+                      type="button"
+                      className={`dialog-switch ${options.exportVoiceAsText ? 'on' : ''}`}
+                      aria-pressed={options.exportVoiceAsText}
+                      aria-label="切换语音转文字"
+                      onClick={() => setOptions(prev => ({ ...prev, exportVoiceAsText: !prev.exportVoiceAsText }))}
+                    >
+                      <span className="dialog-switch-thumb" />
+                    </button>
+                  </div>
                 </div>
               )}
 
