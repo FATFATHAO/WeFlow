@@ -537,7 +537,7 @@ export default function SnsPage() {
         }
     }, [persistSnsPageCache])
 
-    const renderOverviewStats = () => {
+    const renderOverviewRangeText = () => {
         if (overviewStatsStatus === 'error') {
             return (
                 <button type="button" className="feed-stats-retry" onClick={() => { void loadOverviewStats() }}>
@@ -548,7 +548,7 @@ export default function SnsPage() {
         if (overviewStatsStatus === 'loading') {
             return '统计中...'
         }
-        return `共 ${overviewStats.totalPosts} 条 ｜ ${formatDateOnly(overviewStats.earliestTime)} ~ ${formatDateOnly(overviewStats.latestTime)}`
+        return `${formatDateOnly(overviewStats.earliestTime)} ~ ${formatDateOnly(overviewStats.latestTime)}`
     }
 
     const loadPosts = useCallback(async (options: { reset?: boolean, direction?: 'older' | 'newer' } = {}) => {
@@ -1059,26 +1059,34 @@ export default function SnsPage() {
                     <div className="feed-header">
                         <div className="feed-header-main">
                             <h2>朋友圈</h2>
-                            <button
-                                type="button"
-                                className={`feed-my-timeline-entry ${resolvedCurrentUserContact ? 'ready' : ''} ${myTimelineCountLoading ? 'loading' : ''}`}
-                                onClick={openCurrentUserTimeline}
-                                disabled={!resolvedCurrentUserContact}
-                                title={resolvedCurrentUserContact
-                                    ? `打开${resolvedCurrentUserContact.displayName || '我'}的朋友圈详情`
-                                    : '未在右侧联系人列表中匹配到当前账号'}
-                            >
-                                <span className="feed-my-timeline-label">我的朋友圈</span>
-                                <span className="feed-my-timeline-count">
-                                    {myTimelineCount !== null
-                                        ? `${myTimelineCount.toLocaleString('zh-CN')} 条`
-                                        : myTimelineCountLoading
-                                            ? <Loader2 size={14} className="spin" aria-hidden="true" />
-                                            : '--'}
-                                </span>
-                            </button>
                             <div className={`feed-stats-line ${overviewStatsStatus}`}>
-                                {renderOverviewStats()}
+                                <span className="feed-overview-total">
+                                    {overviewStatsStatus === 'loading'
+                                        ? '共 统计中...'
+                                        : `共 ${overviewStats.totalPosts.toLocaleString('zh-CN')} 条`}
+                                </span>
+                                <span className="feed-stats-divider" aria-hidden="true">｜</span>
+                                <button
+                                    type="button"
+                                    className={`feed-my-timeline-entry ${resolvedCurrentUserContact ? 'ready' : ''} ${myTimelineCountLoading ? 'loading' : ''}`}
+                                    onClick={openCurrentUserTimeline}
+                                    disabled={!resolvedCurrentUserContact}
+                                    title={resolvedCurrentUserContact
+                                        ? `打开${resolvedCurrentUserContact.displayName || '我'}的朋友圈详情`
+                                        : '未在右侧联系人列表中匹配到当前账号'}
+                                >
+                                    <span className="feed-my-timeline-label">我的朋友圈</span>
+                                    <span className="feed-my-timeline-count">
+                                        {myTimelineCount !== null
+                                            ? `${myTimelineCount.toLocaleString('zh-CN')} 条`
+                                            : myTimelineCountLoading
+                                                ? <Loader2 size={14} className="spin" aria-hidden="true" />
+                                                : '--'}
+                                    </span>
+                                </button>
+                            </div>
+                            <div className={`feed-stats-line feed-stats-range ${overviewStatsStatus}`}>
+                                {renderOverviewRangeText()}
                             </div>
                         </div>
                         <div className="header-actions">

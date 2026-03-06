@@ -68,6 +68,10 @@
     }
 
     .feed-stats-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
         font-size: 13px;
         color: var(--text-secondary);
         line-height: 1.4;
@@ -81,6 +85,20 @@
         }
     }
 
+    .feed-stats-range {
+        gap: 0;
+    }
+
+    .feed-overview-total {
+        font-size: inherit;
+        color: inherit;
+        white-space: nowrap;
+    }
+
+    .feed-stats-divider {
+        color: color-mix(in srgb, var(--text-secondary) 78%, transparent);
+    }
+
     .feed-my-timeline-entry {
         display: inline-flex;
         align-items: center;
@@ -89,7 +107,7 @@
         padding: 0;
         border: none;
         background: transparent;
-        font-size: 14px;
+        font-size: 13px;
         line-height: 1.4;
         color: var(--text-secondary);
         cursor: default;
