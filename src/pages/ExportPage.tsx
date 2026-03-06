@@ -174,6 +174,8 @@ const SESSION_MEDIA_METRIC_BACKGROUND_FEED_INTERVAL_MS = 120
 const SESSION_MEDIA_METRIC_CACHE_FLUSH_DELAY_MS = 1200
 const SNS_USER_POST_COUNT_BATCH_SIZE = 12
 const SNS_USER_POST_COUNT_BATCH_INTERVAL_MS = 120
+const SNS_RANK_PAGE_SIZE = 50
+const SNS_RANK_DISPLAY_LIMIT = 15
 const contentTypeLabels: Record<ContentType, string> = {
   text: '聊天文本',
   voice: '语音',
@@ -682,6 +684,63 @@ interface SessionSnsTimelineTarget {
   username: string
   displayName: string
   avatarUrl?: string
+}
+
+interface SessionSnsRankItem {
+  name: string
+  count: number
+  latestTime: number
+}
+
+interface SessionSnsRankCacheEntry {
+  likes: SessionSnsRankItem[]
+  comments: SessionSnsRankItem[]
+  totalPosts: number
+  computedAt: number
+}
+
+const buildSessionSnsRankings = (posts: SnsPost[]): { likes: SessionSnsRankItem[]; comments: SessionSnsRankItem[] } => {
+  const likeMap = new Map<string, SessionSnsRankItem>()
+  const commentMap = new Map<string, SessionSnsRankItem>()
+
+  for (const post of posts) {
+    const createTime = Number(post?.createTime) || 0
+    const likes = Array.isArray(post?.likes) ? post.likes : []
+    const comments = Array.isArray(post?.comments) ? post.comments : []
+
+    for (const likeNameRaw of likes) {
+      const name = String(likeNameRaw || '').trim() || '未知用户'
+      const current = likeMap.get(name)
+      if (current) {
+        current.count += 1
+        if (createTime > current.latestTime) current.latestTime = createTime
+        continue
+      }
+      likeMap.set(name, { name, count: 1, latestTime: createTime })
+    }
+
+    for (const comment of comments) {
+      const name = String(comment?.nickname || '').trim() || '未知用户'
+      const current = commentMap.get(name)
+      if (current) {
+        current.count += 1
+        if (createTime > current.latestTime) current.latestTime = createTime
+        continue
+      }
+      commentMap.set(name, { name, count: 1, latestTime: createTime })
+    }
+  }
+
+  const sorter = (a: SessionSnsRankItem, b: SessionSnsRankItem): number => {
+    if (b.count !== a.count) return b.count - a.count
+    if (b.latestTime !== a.latestTime) return b.latestTime - a.latestTime
+    return a.name.localeCompare(b.name, 'zh-CN')
+  }
+
+  return {
+    likes: [...likeMap.values()].sort(sorter),
+    comments: [...commentMap.values()].sort(sorter)
+  }
 }
 
 interface SessionExportMetric {
@@ -1337,6 +1396,12 @@ function ExportPage() {
   const [sessionSnsTimelineTotalPosts, setSessionSnsTimelineTotalPosts] = useState<number | null>(null)
   const [sessionSnsTimelineStatsLoading, setSessionSnsTimelineStatsLoading] = useState(false)
   const [sessionSnsRankMode, setSessionSnsRankMode] = useState<SnsRankMode | null>(null)
+  const [sessionSnsLikeRankings, setSessionSnsLikeRankings] = useState<SessionSnsRankItem[]>([])
+  const [sessionSnsCommentRankings, setSessionSnsCommentRankings] = useState<SessionSnsRankItem[]>([])
+  const [sessionSnsRankLoading, setSessionSnsRankLoading] = useState(false)
+  const [sessionSnsRankError, setSessionSnsRankError] = useState<string | null>(null)
+  const [sessionSnsRankLoadedPosts, setSessionSnsRankLoadedPosts] = useState(0)
+  const [sessionSnsRankTotalPosts, setSessionSnsRankTotalPosts] = useState<number | null>(null)
 
   const [exportFolder, setExportFolder] = useState('')
   const [writeLayout, setWriteLayout] = useState<configService.ExportWriteLayout>('B')
@@ -1429,6 +1494,9 @@ function ExportPage() {
   const sessionSnsTimelinePostsRef = useRef<SnsPost[]>([])
   const sessionSnsTimelineLoadingRef = useRef(false)
   const sessionSnsTimelineRequestTokenRef = useRef(0)
+  const sessionSnsRankRequestTokenRef = useRef(0)
+  const sessionSnsRankLoadingRef = useRef(false)
+  const sessionSnsRankCacheRef = useRef<Record<string, SessionSnsRankCacheEntry>>({})
   const snsUserPostCountsHydrationTokenRef = useRef(0)
   const snsUserPostCountsBatchTimerRef = useRef<number | null>(null)
   const sessionPreciseRefreshAtRef = useRef<Record<string, number>>({})
@@ -2155,7 +2223,15 @@ function ExportPage() {
   const closeSessionSnsTimeline = useCallback(() => {
     sessionSnsTimelineRequestTokenRef.current += 1
     sessionSnsTimelineLoadingRef.current = false
+    sessionSnsRankRequestTokenRef.current += 1
+    sessionSnsRankLoadingRef.current = false
     setSessionSnsRankMode(null)
+    setSessionSnsLikeRankings([])
+    setSessionSnsCommentRankings([])
+    setSessionSnsRankLoading(false)
+    setSessionSnsRankError(null)
+    setSessionSnsRankLoadedPosts(0)
+    setSessionSnsRankTotalPosts(null)
     setSessionSnsTimelineTarget(null)
     setSessionSnsTimelinePosts([])
     setSessionSnsTimelineLoading(false)
@@ -2166,7 +2242,14 @@ function ExportPage() {
   }, [])
 
   const openSessionSnsTimelineByTarget = useCallback((target: SessionSnsTimelineTarget) => {
+    sessionSnsRankRequestTokenRef.current += 1
+    sessionSnsRankLoadingRef.current = false
     setSessionSnsRankMode(null)
+    setSessionSnsLikeRankings([])
+    setSessionSnsCommentRankings([])
+    setSessionSnsRankLoading(false)
+    setSessionSnsRankError(null)
+    setSessionSnsRankLoadedPosts(0)
     setSessionSnsTimelineTarget(target)
     setSessionSnsTimelinePosts([])
     setSessionSnsTimelineHasMore(false)
@@ -2177,9 +2260,11 @@ function ExportPage() {
       const count = Number(snsUserPostCounts[target.username] || 0)
       setSessionSnsTimelineTotalPosts(Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0)
       setSessionSnsTimelineStatsLoading(false)
+      setSessionSnsRankTotalPosts(Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0)
     } else {
       setSessionSnsTimelineTotalPosts(null)
       setSessionSnsTimelineStatsLoading(true)
+      setSessionSnsRankTotalPosts(null)
     }
 
     void loadSessionSnsTimelinePosts(target, { reset: true })
@@ -2225,6 +2310,102 @@ function ExportPage() {
     sessionSnsTimelineTarget
   ])
 
+  const loadSessionSnsRankings = useCallback(async (target: SessionSnsTimelineTarget) => {
+    const normalizedUsername = String(target?.username || '').trim()
+    if (!normalizedUsername || sessionSnsRankLoadingRef.current) return
+
+    const knownTotal = snsUserPostCountsStatus === 'ready'
+      ? Number(snsUserPostCounts[normalizedUsername] || 0)
+      : null
+    const normalizedKnownTotal = knownTotal !== null && Number.isFinite(knownTotal)
+      ? Math.max(0, Math.floor(knownTotal))
+      : null
+    const cached = sessionSnsRankCacheRef.current[normalizedUsername]
+
+    if (cached && (normalizedKnownTotal === null || cached.totalPosts === normalizedKnownTotal)) {
+      setSessionSnsLikeRankings(cached.likes)
+      setSessionSnsCommentRankings(cached.comments)
+      setSessionSnsRankLoadedPosts(cached.totalPosts)
+      setSessionSnsRankTotalPosts(cached.totalPosts)
+      setSessionSnsRankError(null)
+      setSessionSnsRankLoading(false)
+      return
+    }
+
+    sessionSnsRankLoadingRef.current = true
+    const requestToken = ++sessionSnsRankRequestTokenRef.current
+    setSessionSnsRankLoading(true)
+    setSessionSnsRankError(null)
+    setSessionSnsRankLoadedPosts(0)
+    setSessionSnsRankTotalPosts(normalizedKnownTotal)
+
+    try {
+      const allPosts: SnsPost[] = []
+      let endTime: number | undefined
+      let hasMore = true
+
+      while (hasMore) {
+        const result = await window.electronAPI.sns.getTimeline(
+          SNS_RANK_PAGE_SIZE,
+          0,
+          [normalizedUsername],
+          '',
+          undefined,
+          endTime
+        )
+        if (requestToken !== sessionSnsRankRequestTokenRef.current) return
+
+        if (!result.success) {
+          throw new Error(result.error || '加载朋友圈排行失败')
+        }
+
+        const pagePosts = Array.isArray(result.timeline)
+          ? [...(result.timeline as SnsPost[])].sort((a, b) => b.createTime - a.createTime)
+          : []
+        if (pagePosts.length === 0) {
+          hasMore = false
+          break
+        }
+
+        allPosts.push(...pagePosts)
+        setSessionSnsRankLoadedPosts(allPosts.length)
+        if (normalizedKnownTotal === null) {
+          setSessionSnsRankTotalPosts(allPosts.length)
+        }
+
+        endTime = pagePosts[pagePosts.length - 1].createTime - 1
+        hasMore = pagePosts.length >= SNS_RANK_PAGE_SIZE
+      }
+
+      if (requestToken !== sessionSnsRankRequestTokenRef.current) return
+
+      const rankings = buildSessionSnsRankings(allPosts)
+      const totalPosts = allPosts.length
+      sessionSnsRankCacheRef.current[normalizedUsername] = {
+        likes: rankings.likes,
+        comments: rankings.comments,
+        totalPosts,
+        computedAt: Date.now()
+      }
+      setSessionSnsLikeRankings(rankings.likes)
+      setSessionSnsCommentRankings(rankings.comments)
+      setSessionSnsRankLoadedPosts(totalPosts)
+      setSessionSnsRankTotalPosts(totalPosts)
+      setSessionSnsRankError(null)
+    } catch (error) {
+      if (requestToken !== sessionSnsRankRequestTokenRef.current) return
+      const message = error instanceof Error ? error.message : String(error)
+      setSessionSnsLikeRankings([])
+      setSessionSnsCommentRankings([])
+      setSessionSnsRankError(message || '加载朋友圈排行失败')
+    } finally {
+      if (requestToken === sessionSnsRankRequestTokenRef.current) {
+        sessionSnsRankLoadingRef.current = false
+        setSessionSnsRankLoading(false)
+      }
+    }
+  }, [snsUserPostCounts, snsUserPostCountsStatus])
+
   const renderSessionSnsTimelineStats = useCallback((): string => {
     const loadedCount = sessionSnsTimelinePosts.length
     const loadPart = sessionSnsTimelineStatsLoading
@@ -2246,52 +2427,6 @@ function ExportPage() {
     sessionSnsTimelineStatsLoading,
     sessionSnsTimelineTotalPosts
   ])
-
-  const sessionSnsLikeRankings = useMemo(() => {
-    const rankMap = new Map<string, { name: string; count: number; latestTime: number }>()
-    for (const post of sessionSnsTimelinePosts) {
-      const createTime = Number(post?.createTime) || 0
-      const likes = Array.isArray(post?.likes) ? post.likes : []
-      for (const likeNameRaw of likes) {
-        const name = String(likeNameRaw || '').trim() || '未知用户'
-        const current = rankMap.get(name)
-        if (current) {
-          current.count += 1
-          if (createTime > current.latestTime) current.latestTime = createTime
-          continue
-        }
-        rankMap.set(name, { name, count: 1, latestTime: createTime })
-      }
-    }
-    return [...rankMap.values()].sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count
-      if (b.latestTime !== a.latestTime) return b.latestTime - a.latestTime
-      return a.name.localeCompare(b.name, 'zh-CN')
-    })
-  }, [sessionSnsTimelinePosts])
-
-  const sessionSnsCommentRankings = useMemo(() => {
-    const rankMap = new Map<string, { name: string; count: number; latestTime: number }>()
-    for (const post of sessionSnsTimelinePosts) {
-      const createTime = Number(post?.createTime) || 0
-      const comments = Array.isArray(post?.comments) ? post.comments : []
-      for (const comment of comments) {
-        const name = String(comment?.nickname || '').trim() || '未知用户'
-        const current = rankMap.get(name)
-        if (current) {
-          current.count += 1
-          if (createTime > current.latestTime) current.latestTime = createTime
-          continue
-        }
-        rankMap.set(name, { name, count: 1, latestTime: createTime })
-      }
-    }
-    return [...rankMap.values()].sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count
-      if (b.latestTime !== a.latestTime) return b.latestTime - a.latestTime
-      return a.name.localeCompare(b.name, 'zh-CN')
-    })
-  }, [sessionSnsTimelinePosts])
 
   const toggleSessionSnsRankMode = useCallback((mode: SnsRankMode) => {
     setSessionSnsRankMode((prev) => (prev === mode ? null : mode))
@@ -4844,11 +4979,14 @@ function ExportPage() {
     }
     if (snsUserPostCountsStatus === 'ready') {
       const total = Number(snsUserPostCounts[sessionSnsTimelineTarget.username] || 0)
-      setSessionSnsTimelineTotalPosts(Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0)
+      const normalizedTotal = Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0
+      setSessionSnsTimelineTotalPosts(normalizedTotal)
+      setSessionSnsRankTotalPosts(normalizedTotal)
       setSessionSnsTimelineStatsLoading(false)
       return
     }
     setSessionSnsTimelineTotalPosts(null)
+    setSessionSnsRankTotalPosts(null)
     setSessionSnsTimelineStatsLoading(false)
   }, [sessionSnsTimelineTarget, snsUserPostCounts, snsUserPostCountsStatus])
 
@@ -4859,16 +4997,30 @@ function ExportPage() {
     }
   }, [sessionSnsTimelinePosts.length, sessionSnsTimelineTotalPosts])
 
+  useEffect(() => {
+    if (!sessionSnsRankMode || !sessionSnsTimelineTarget) return
+    void loadSessionSnsRankings(sessionSnsTimelineTarget)
+  }, [loadSessionSnsRankings, sessionSnsRankMode, sessionSnsTimelineTarget])
+
   const closeSessionDetailPanel = useCallback(() => {
     detailRequestSeqRef.current += 1
     detailStatsPriorityRef.current = false
     sessionSnsTimelineRequestTokenRef.current += 1
     sessionSnsTimelineLoadingRef.current = false
+    sessionSnsRankRequestTokenRef.current += 1
+    sessionSnsRankLoadingRef.current = false
     setShowSessionDetailPanel(false)
     setIsLoadingSessionDetail(false)
     setIsLoadingSessionDetailExtra(false)
     setIsRefreshingSessionDetailStats(false)
     setIsLoadingSessionRelationStats(false)
+    setSessionSnsRankMode(null)
+    setSessionSnsLikeRankings([])
+    setSessionSnsCommentRankings([])
+    setSessionSnsRankLoading(false)
+    setSessionSnsRankError(null)
+    setSessionSnsRankLoadedPosts(0)
+    setSessionSnsRankTotalPosts(null)
     setSessionSnsTimelineTarget(null)
     setSessionSnsTimelinePosts([])
     setSessionSnsTimelineLoading(false)
@@ -6107,12 +6259,24 @@ function ExportPage() {
                           role="region"
                           aria-label={sessionSnsRankMode === 'likes' ? '点赞排行' : '评论排行'}
                         >
-                          {sessionSnsActiveRankings.length === 0 ? (
+                          {sessionSnsRankLoading && (
+                            <div className="sns-dialog-rank-loading">
+                              <Loader2 size={12} className="spin" />
+                              <span>
+                                {sessionSnsRankTotalPosts !== null && sessionSnsRankTotalPosts > 0
+                                  ? `统计中，已加载 ${sessionSnsRankLoadedPosts} / ${sessionSnsRankTotalPosts} 条`
+                                  : `统计中，已加载 ${sessionSnsRankLoadedPosts} 条`}
+                              </span>
+                            </div>
+                          )}
+                          {!sessionSnsRankLoading && sessionSnsRankError ? (
+                            <div className="sns-dialog-rank-empty">{sessionSnsRankError}</div>
+                          ) : !sessionSnsRankLoading && sessionSnsActiveRankings.length === 0 ? (
                             <div className="sns-dialog-rank-empty">
                               {sessionSnsRankMode === 'likes' ? '暂无点赞数据' : '暂无评论数据'}
                             </div>
                           ) : (
-                            sessionSnsActiveRankings.slice(0, 15).map((item, index) => (
+                            sessionSnsActiveRankings.slice(0, SNS_RANK_DISPLAY_LIMIT).map((item, index) => (
                               <div className="sns-dialog-rank-row" key={`${sessionSnsRankMode}-${item.name}`}>
                                 <span className="sns-dialog-rank-index">{index + 1}</span>
                                 <span className="sns-dialog-rank-name" title={item.name}>{item.name}</span>
