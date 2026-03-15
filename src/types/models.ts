@@ -15,6 +15,8 @@ export interface ChatSession {
   selfWxid?: string // Helper field to avoid extra API calls
   isFolded?: boolean  // 是否已折叠进"折叠的群聊"
   isMuted?: boolean   // 是否开启免打扰
+  alias?: string      // 微信号
+  matchedField?: 'wxid' | 'alias' | 'name' // 搜索匹配的字段
 }
 
 // 联系人
@@ -107,6 +109,9 @@ export interface Message {
   chatRecordTitle?: string  // 聊天记录标题
   chatRecordList?: ChatRecordItem[]  // 聊天记录列表
   _db_path?: string
+  // 运行时补充的发送者信息
+  senderDisplayName?: string
+  senderAvatarUrl?: string
 }
 
 // 聊天记录项

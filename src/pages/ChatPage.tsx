@@ -328,22 +328,98 @@ interface LoadMessagesOptions {
 }
 
 // 全局头像加载队列管理器已移至 src/utils/AvatarLoadQueue.ts
-// 全局头像加载队列管理器已移至 src/utils/AvatarLoadQueue.ts
 import { avatarLoadQueue } from '../utils/AvatarLoadQueue'
 import { Avatar } from '../components/Avatar'
 
 // 头像组件 - 支持骨架屏加载和懒加载（优化：限制并发，使用 memo 避免不必要的重渲染）
+// 高亮搜索关键词组件
+const HighlightText = React.memo(({ text, keyword }: { text: string; keyword: string }) => {
+  if (!keyword) return <>{text}</>
+
+  const lowerText = text.toLowerCase()
+  const lowerKeyword = keyword.toLowerCase()
+  const matchIndex = lowerText.indexOf(lowerKeyword)
+
+  if (matchIndex === -1) return <>{text}</>
+
+  // 如果匹配位置在后面且文本过长，截断前面部分
+  const maxLength = 50
+  let displayText = text
+
+  if (text.length > maxLength && matchIndex > 20) {
+    const start = Math.max(0, matchIndex - 15)
+    displayText = '...' + text.slice(start)
+  }
+
+  const parts = displayText.split(new RegExp(`(${keyword})`, 'gi'))
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === lowerKeyword ?
+          <span key={i} className="highlight">{part}</span> : part
+      )}
+    </>
+  )
+})
+
+const HighlightTextNoTruncate = React.memo(({ text, keyword }: { text: string; keyword: string }) => {
+  if (!keyword) return <>{text}</>
+
+  const lowerText = text.toLowerCase()
+  const lowerKeyword = keyword.toLowerCase()
+  const matchIndex = lowerText.indexOf(lowerKeyword)
+
+  if (matchIndex === -1) return <>{text}</>
+
+  const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const matchEnd = matchIndex + keyword.length
+  const maxDisplayLength = 25
+
+  // 如果匹配位置不在开头，或文本过长，则居中显示
+  if (matchIndex > 5 || text.length > maxDisplayLength) {
+    const start = Math.max(0, matchIndex - 8)
+    const end = Math.min(text.length, matchEnd + 15)
+    const prefix = start > 0 ? '...' : ''
+    const suffix = end < text.length ? '...' : ''
+    const middleText = text.slice(start, end)
+
+    const parts = middleText.split(new RegExp(`(${escapedKeyword})`, 'gi'))
+    return (
+      <>
+        {prefix}
+        {parts.map((part, i) =>
+          part.toLowerCase() === lowerKeyword ?
+            <span key={i} className="highlight">{part}</span> : part
+        )}
+        {suffix}
+      </>
+    )
+  }
+
+  const parts = text.split(new RegExp(`(${escapedKeyword})`, 'gi'))
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === lowerKeyword ?
+          <span key={i} className="highlight">{part}</span> : part
+      )}
+    </>
+  )
+})
+
 // 会话项组件（使用 memo 优化，避免不必要的重渲染）
 const SessionItem = React.memo(function SessionItem({
   session,
   isActive,
   onSelect,
-  formatTime
+  formatTime,
+  searchKeyword
 }: {
   session: ChatSession
   isActive: boolean
   onSelect: (session: ChatSession) => void
   formatTime: (timestamp: number) => string
+  searchKeyword?: string
 }) {
   const timeText = useMemo(() =>
     formatTime(session.lastTimestamp || session.sortTimestamp),
@@ -375,6 +451,16 @@ const SessionItem = React.memo(function SessionItem({
     )
   }
 
+  // 根据匹配字段显示不同的 summary
+  const summaryContent = useMemo(() => {
+    if (session.matchedField === 'wxid') {
+      return <span className="session-summary">wxid：<HighlightTextNoTruncate text={session.username} keyword={searchKeyword || ''} /></span>
+    } else if (session.matchedField === 'alias' && session.alias) {
+      return <span className="session-summary">微信号：<HighlightTextNoTruncate text={session.alias} keyword={searchKeyword || ''} /></span>
+    }
+    return <span className="session-summary">{session.summary || '暂无消息'}</span>
+  }, [session.matchedField, session.username, session.alias, session.summary, searchKeyword])
+
   return (
     <div
       className={`session-item ${isActive ? 'active' : ''} ${session.isMuted ? 'muted' : ''}`}
@@ -388,11 +474,23 @@ const SessionItem = React.memo(function SessionItem({
       />
       <div className="session-info">
         <div className="session-top">
-          <span className="session-name">{session.displayName || session.username}</span>
+          <span className="session-name">
+            {(() => {
+              const shouldHighlight = (session.matchedField as any) === 'name' && searchKeyword
+              if (shouldHighlight) {
+                console.log('高亮名字:', session.displayName, 'keyword:', searchKeyword)
+              }
+              return shouldHighlight ? (
+                <HighlightText text={session.displayName || session.username} keyword={searchKeyword} />
+              ) : (
+                session.displayName || session.username
+              )
+            })()}
+          </span>
           <span className="session-time">{timeText}</span>
         </div>
         <div className="session-bottom">
-          <span className="session-summary">{session.summary || '暂无消息'}</span>
+          {summaryContent}
           <div className="session-badges">
             {session.isMuted && <BellOff size={12} className="mute-icon" />}
             {session.unreadCount > 0 && (
@@ -411,11 +509,14 @@ const SessionItem = React.memo(function SessionItem({
     prevProps.session.displayName === nextProps.session.displayName &&
     prevProps.session.avatarUrl === nextProps.session.avatarUrl &&
     prevProps.session.summary === nextProps.session.summary &&
+    prevProps.session.matchedField === nextProps.session.matchedField &&
+    prevProps.session.alias === nextProps.session.alias &&
     prevProps.session.unreadCount === nextProps.session.unreadCount &&
     prevProps.session.lastTimestamp === nextProps.session.lastTimestamp &&
     prevProps.session.sortTimestamp === nextProps.session.sortTimestamp &&
     prevProps.session.isMuted === nextProps.session.isMuted &&
-    prevProps.isActive === nextProps.isActive
+    prevProps.isActive === nextProps.isActive &&
+    prevProps.searchKeyword === nextProps.searchKeyword
   )
 })
 
@@ -573,8 +674,9 @@ function ChatPage(props: ChatPageProps) {
   // 全局消息搜索
   const [showGlobalMsgSearch, setShowGlobalMsgSearch] = useState(false)
   const [globalMsgQuery, setGlobalMsgQuery] = useState('')
-  const [globalMsgResults, setGlobalMsgResults] = useState<any[]>([])
+  const [globalMsgResults, setGlobalMsgResults] = useState<Message[]>([])
   const [globalMsgSearching, setGlobalMsgSearching] = useState(false)
+  const pendingInSessionSearchRef = useRef<{ keyword: string; firstMsgTime: number; results: any[] } | null>(null)
 
   // 自定义删除确认对话框
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -2074,7 +2176,7 @@ function ChatPage(props: ChatPageProps) {
   }
 
   // 联系人信息更新队列（防抖批量更新，避免频繁重渲染）
-  const contactUpdateQueueRef = useRef<Map<string, { displayName?: string; avatarUrl?: string }>>(new Map())
+  const contactUpdateQueueRef = useRef<Map<string, { displayName?: string; avatarUrl?: string; alias?: string }>>(new Map())
   const contactUpdateTimerRef = useRef<number | null>(null)
   const lastUpdateTimeRef = useRef(0)
 
@@ -2108,12 +2210,14 @@ function ChatPage(props: ChatPageProps) {
         if (update) {
           const newDisplayName = update.displayName || session.displayName || session.username
           const newAvatarUrl = update.avatarUrl || session.avatarUrl
-          if (newDisplayName !== session.displayName || newAvatarUrl !== session.avatarUrl) {
+          const newAlias = update.alias || session.alias
+          if (newDisplayName !== session.displayName || newAvatarUrl !== session.avatarUrl || newAlias !== session.alias) {
             hasChanges = true
             return {
               ...session,
               displayName: newDisplayName,
-              avatarUrl: newAvatarUrl
+              avatarUrl: newAvatarUrl,
+              alias: newAlias
             }
           }
         }
@@ -2145,7 +2249,7 @@ function ChatPage(props: ChatPageProps) {
       const dllStart = performance.now()
       const result = await window.electronAPI.chat.enrichSessionsContactInfo(usernames) as {
         success: boolean
-        contacts?: Record<string, { displayName?: string; avatarUrl?: string }>
+        contacts?: Record<string, { displayName?: string; avatarUrl?: string; alias?: string }>
         error?: string
       }
       const dllTime = performance.now() - dllStart
@@ -2468,6 +2572,46 @@ function ChatPage(props: ChatPageProps) {
           pendingSessionLoadRef.current = null
           initialLoadRequestedSessionRef.current = null
           setIsSessionSwitching(false)
+
+          // 处理从全局搜索跳转过来的情况
+          if (pendingInSessionSearchRef.current) {
+            const { keyword, firstMsgTime, results } = pendingInSessionSearchRef.current
+            pendingInSessionSearchRef.current = null
+
+            setShowInSessionSearch(true)
+            setInSessionQuery(keyword)
+
+            if (firstMsgTime > 0) {
+              handleJumpDateSelect(new Date(firstMsgTime * 1000))
+            }
+
+            // 先获取完整消息，再补充发送者信息
+            const sid = currentSessionId
+            if (sid) {
+              Promise.all(
+                results.map(async (msg: any) => {
+                  try {
+                    const full = await window.electronAPI.chat.getMessages(sid, 0, 3, msg.createTime, msg.createTime, false)
+                    const found = full?.messages?.find((m: any) => m.localId === msg.localId) || msg
+
+                    if (found.senderUsername) {
+                      const contact = await window.electronAPI.chat.getContact(found.senderUsername)
+                      if (contact) {
+                        found.senderDisplayName = contact.remark || contact.nickName || found.senderUsername
+                      }
+                      const avatarData = await window.electronAPI.chat.getContactAvatar(found.senderUsername)
+                      if (avatarData?.avatarUrl) {
+                        found.senderAvatarUrl = avatarData.avatarUrl
+                      }
+                    }
+                    return found
+                  } catch {
+                    return msg
+                  }
+                })
+              ).then(enriched => setInSessionResults(enriched))
+            }
+          }
         }
       }
     }
@@ -2553,6 +2697,13 @@ function ChatPage(props: ChatPageProps) {
     const switchRequestSeq = sessionSwitchRequestSeqRef.current + 1
     sessionSwitchRequestSeqRef.current = switchRequestSeq
 
+    // 清空会话内搜索状态（除非是从全局搜索跳转过来）
+    if (!pendingInSessionSearchRef.current) {
+      setShowInSessionSearch(false)
+      setInSessionQuery('')
+      setInSessionResults([])
+    }
+
     setCurrentSession(normalizedSessionId, { preserveMessages: false })
     setNoMessageTable(false)
 
@@ -2561,6 +2712,45 @@ function ChatPage(props: ChatPageProps) {
       pendingSessionLoadRef.current = null
       initialLoadRequestedSessionRef.current = null
       setIsSessionSwitching(false)
+
+      // 处理从全局搜索跳转过来的情况
+      if (pendingInSessionSearchRef.current) {
+        const { keyword, firstMsgTime, results } = pendingInSessionSearchRef.current
+        pendingInSessionSearchRef.current = null
+
+        setShowInSessionSearch(true)
+        setInSessionQuery(keyword)
+
+        if (firstMsgTime > 0) {
+          handleJumpDateSelect(new Date(firstMsgTime * 1000))
+        }
+
+        // 先获取完整消息，再补充发送者信息
+        const sid = normalizedSessionId
+        Promise.all(
+          results.map(async (msg: any) => {
+            try {
+              const full = await window.electronAPI.chat.getMessages(sid, 0, 3, msg.createTime, msg.createTime, false)
+              const found = full?.messages?.find((m: any) => m.localId === msg.localId) || msg
+
+              if (found.senderUsername) {
+                const contact = await window.electronAPI.chat.getContact(found.senderUsername)
+                if (contact) {
+                  found.senderDisplayName = contact.remark || contact.nickName || found.senderUsername
+                }
+                const avatarData = await window.electronAPI.chat.getContactAvatar(found.senderUsername)
+                if (avatarData?.avatarUrl) {
+                  found.senderAvatarUrl = avatarData.avatarUrl
+                }
+              }
+              return found
+            } catch {
+              return msg
+            }
+          })
+        ).then(enriched => setInSessionResults(enriched))
+      }
+
       void refreshSessionIncrementally(normalizedSessionId, switchRequestSeq)
     } else {
       pendingSessionLoadRef.current = normalizedSessionId
@@ -2639,7 +2829,36 @@ function ChatPage(props: ChatPageProps) {
       try {
         const res = await window.electronAPI.chat.searchMessages(keyword.trim(), sid, 50, 0)
         if (gen !== inSessionSearchGenRef.current) return
-        setInSessionResults(res?.messages || [])
+        const messages = res?.messages || []
+
+        // 查询完整消息信息
+        const enriched = await Promise.all(
+          messages.map(async (msg: any) => {
+            try {
+              const full = await window.electronAPI.chat.getMessages(sid, 0, 3, msg.createTime, msg.createTime, false)
+              const found: any = full?.messages?.find((m: any) => m.localId === msg.localId)
+              if (found && found.senderUsername) {
+                try {
+                  const contact = await window.electronAPI.chat.getContact(found.senderUsername)
+                  if (contact) {
+                    found.senderDisplayName = contact.remark || contact.nickName || found.senderUsername
+                  }
+                  const avatarData = await window.electronAPI.chat.getContactAvatar(found.senderUsername)
+                  if (avatarData?.avatarUrl) {
+                    found.senderAvatarUrl = avatarData.avatarUrl
+                  }
+                } catch {}
+              }
+              return found || msg
+            } catch {
+              return msg
+            }
+          })
+        )
+
+        if (gen !== inSessionSearchGenRef.current) return
+        console.log('补充后:', enriched[0])
+        setInSessionResults(enriched)
       } catch {
         if (gen !== inSessionSearchGenRef.current) return
         setInSessionResults([])
@@ -2683,9 +2902,15 @@ function ChatPage(props: ChatPageProps) {
       if (gen !== globalMsgSearchGenRef.current) return
       setGlobalMsgSearching(true)
       try {
-        const res = await window.electronAPI.chat.searchMessages(keyword.trim(), undefined, 50, 0)
+        const results: Array<Message & { sessionId: string }> = []
+        for (const session of sessions) {
+          const res = await window.electronAPI.chat.searchMessages(keyword.trim(), session.username, 10, 0)
+          if (res?.messages) {
+            results.push(...res.messages.map(msg => ({ ...msg, sessionId: session.username })))
+          }
+        }
         if (gen !== globalMsgSearchGenRef.current) return
-        setGlobalMsgResults(res?.messages || [])
+        setGlobalMsgResults(results as any)
       } catch {
         if (gen !== globalMsgSearchGenRef.current) return
         setGlobalMsgResults([])
@@ -3119,11 +3344,24 @@ function ChatPage(props: ChatPageProps) {
       return
     }
     const lower = searchKeyword.toLowerCase()
-    setFilteredSessions(visible.filter(s =>
-      s.displayName?.toLowerCase().includes(lower) ||
-      s.username.toLowerCase().includes(lower) ||
-      s.summary.toLowerCase().includes(lower)
-    ))
+    setFilteredSessions(visible.filter(s => {
+      const matchedByName = s.displayName?.toLowerCase().includes(lower)
+      const matchedByUsername = s.username.toLowerCase().includes(lower)
+      const matchedByAlias = s.alias?.toLowerCase().includes(lower)
+
+      if (matchedByUsername && !matchedByName && !matchedByAlias) {
+        s.matchedField = 'wxid'
+      } else if (matchedByAlias && !matchedByName && !matchedByUsername) {
+        s.matchedField = 'alias'
+      } else if (matchedByName && !matchedByUsername && !matchedByAlias) {
+        (s as any).matchedField = 'name'
+        console.log('设置 matchedField=name:', s.displayName)
+      } else {
+        s.matchedField = undefined
+      }
+
+      return matchedByName || matchedByUsername || matchedByAlias
+    }))
   }, [sessions, searchKeyword, setFilteredSessions])
 
   // 折叠群列表（独立计算，供折叠 panel 使用）
@@ -3132,11 +3370,22 @@ function ChatPage(props: ChatPageProps) {
     const folded = sessions.filter(s => s.isFolded)
     if (!searchKeyword.trim() || !foldedView) return folded
     const lower = searchKeyword.toLowerCase()
-    return folded.filter(s =>
-      s.displayName?.toLowerCase().includes(lower) ||
-      s.username.toLowerCase().includes(lower) ||
-      s.summary.toLowerCase().includes(lower)
-    )
+    return folded.filter(s => {
+      const matchedByName = s.displayName?.toLowerCase().includes(lower)
+      const matchedByUsername = s.username.toLowerCase().includes(lower)
+      const matchedByAlias = s.alias?.toLowerCase().includes(lower)
+      const matchedBySummary = s.summary.toLowerCase().includes(lower)
+
+      if (matchedByUsername && !matchedByName && !matchedBySummary && !matchedByAlias) {
+        s.matchedField = 'wxid'
+      } else if (matchedByAlias && !matchedByName && !matchedBySummary && !matchedByUsername) {
+        s.matchedField = 'alias'
+      } else {
+        s.matchedField = undefined
+      }
+
+      return matchedByName || matchedByUsername || matchedByAlias || matchedBySummary
+    })
   }, [sessions, searchKeyword, foldedView])
 
   const hasSessionRecords = Array.isArray(sessions) && sessions.length > 0
@@ -4033,6 +4282,74 @@ function ChatPage(props: ChatPageProps) {
           </div>
         )}
 
+        {/* 全局消息搜索结果 */}
+        {globalMsgQuery && (
+          <div className="global-msg-search-results">
+            {globalMsgSearching ? (
+              <div className="search-loading">
+                <Loader2 className="spin" size={20} />
+                <span>搜索中...</span>
+              </div>
+            ) : globalMsgResults.length > 0 ? (
+              <>
+                <div className="search-section-header">聊天记录：</div>
+                <div className="search-results-list">
+                  {Object.entries(
+                    globalMsgResults.reduce((acc, msg) => {
+                      const sessionId = (msg as any).sessionId || '未知';
+                      if (!acc[sessionId]) acc[sessionId] = [];
+                      acc[sessionId].push(msg);
+                      return acc;
+                    }, {} as Record<string, Message[]>)
+                  ).map(([sessionId, messages]) => {
+                    const session = sessions.find(s => s.username === sessionId);
+                    const firstMsg = messages[0];
+                    const count = messages.length;
+                    return (
+                      <div
+                        key={sessionId}
+                        className="session-item"
+                        onClick={() => {
+                          if (session) {
+                            pendingInSessionSearchRef.current = {
+                              keyword: globalMsgQuery,
+                              firstMsgTime: firstMsg.createTime || 0,
+                              results: messages
+                            };
+                            handleSelectSession(session);
+                          }
+                        }}
+                      >
+                        <Avatar
+                          src={session?.avatarUrl}
+                          name={session?.displayName || sessionId}
+                          size={48}
+                        />
+                        <div className="session-content">
+                          <div className="session-top">
+                            <span className="session-name">{session?.displayName || sessionId}</span>
+                          </div>
+                          <div className="session-preview">
+                            <HighlightTextNoTruncate text={firstMsg.parsedContent || firstMsg.content || ''} keyword={globalMsgQuery} />
+                          </div>
+                          {count > 1 && (
+                            <div className="search-count">共 {count} 条相关聊天记录</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="no-results">
+                <MessageSquare size={32} />
+                <p>未找到相关消息</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ... (previous content) ... */}
         {shouldShowSessionsSkeleton ? (
           <div className="loading-sessions">
@@ -4048,66 +4365,39 @@ function ChatPage(props: ChatPageProps) {
           </div>
         ) : (
           <div className={`session-list-viewport ${foldedView ? 'folded' : ''}`}>
-            {/* 全局消息搜索结果 */}
-            {showGlobalMsgSearch ? (
-              <div className="global-msg-search-results">
-                {globalMsgSearching && (
-                  <div className="global-msg-searching"><Loader2 size={14} className="spin" /> 搜索中...</div>
-                )}
-                {!globalMsgSearching && globalMsgQuery && globalMsgResults.length === 0 && (
-                  <div className="global-msg-empty">没有找到相关消息</div>
-                )}
-                {!globalMsgSearching && globalMsgResults.map((msg, i) => {
-                  const sid = msg._session_id || msg.username || ''
-                  const sessionObj = sessions.find(s => s.username === sid)
-                  const sessionName = sessionObj?.displayName || sid || '未知会话'
-                  const content = (msg.content || msg.strContent || msg.message_content || '').slice(0, 60)
-                  const ts = msg.createTime || msg.create_time
-                  const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''
-                  return (
-                    <div key={i} className="global-msg-result-item" onClick={() => {
-                      if (sessionObj) {
-                        handleSelectSession(sessionObj)
-                        handleCloseGlobalMsgSearch()
-                        setSearchKeyword('')
-                      }
-                    }}>
-                      <div className="global-msg-result-session">{sessionName}</div>
-                      <div className="global-msg-result-content">{content}</div>
-                      <div className="global-msg-result-time">{timeStr}</div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-            <>
             {/* 普通会话列表 */}
             <div className="session-list-panel main-panel">
               {Array.isArray(filteredSessions) && filteredSessions.length > 0 ? (
-                <div
-                  className="session-list"
-                  ref={sessionListRef}
-                  onScroll={() => {
-                    isScrollingRef.current = true
-                    if (sessionScrollTimeoutRef.current) {
-                      clearTimeout(sessionScrollTimeoutRef.current)
-                    }
-                    sessionScrollTimeoutRef.current = window.setTimeout(() => {
-                      isScrollingRef.current = false
-                      sessionScrollTimeoutRef.current = null
-                    }, 200)
-                  }}
-                >
-                  {filteredSessions.map(session => (
+                <>
+                  {searchKeyword && (
+                    <div className="search-section-header">联系人：</div>
+                  )}
+                  <div
+                    className="session-list"
+                    ref={sessionListRef}
+                    onScroll={() => {
+                      isScrollingRef.current = true
+                      if (sessionScrollTimeoutRef.current) {
+                        clearTimeout(sessionScrollTimeoutRef.current)
+                      }
+                      sessionScrollTimeoutRef.current = window.setTimeout(() => {
+                        isScrollingRef.current = false
+                        sessionScrollTimeoutRef.current = null
+                      }, 200)
+                    }}
+                  >
+                    {filteredSessions.map(session => (
                     <SessionItem
                       key={session.username}
                       session={session}
                       isActive={currentSessionId === session.username}
                       onSelect={handleSelectSession}
                       formatTime={formatSessionTime}
+                      searchKeyword={searchKeyword}
                     />
                   ))}
                 </div>
+                </>
               ) : (
                 <div className="empty-sessions">
                   <MessageSquare />
@@ -4128,6 +4418,7 @@ function ChatPage(props: ChatPageProps) {
                       isActive={currentSessionId === session.username}
                       onSelect={handleSelectSession}
                       formatTime={formatSessionTime}
+                      searchKeyword={searchKeyword}
                     />
                   ))}
                 </div>
@@ -4138,16 +4429,11 @@ function ChatPage(props: ChatPageProps) {
                 </div>
               )}
             </div>
-            </>
-            )}
           </div>
         )}
-
-
       </div>
       )}
 
-      {/* 拖动调节条 */}
       {!standaloneSessionWindow && <div className="resize-handle" onMouseDown={handleResizeStart} />}
 
       {/* 右侧消息区域 */}
@@ -4326,40 +4612,68 @@ function ChatPage(props: ChatPageProps) {
               onClose={() => setChatSnsTimelineTarget(null)}
             />
 
-            {/* 会话内搜索栏 */}
+            {/* 会话内搜索浮窗 */}
             {showInSessionSearch && (
-              <div className="in-session-search-bar">
-                <Search size={14} className="in-session-search-icon" />
-                <input
-                  ref={inSessionSearchRef}
-                  type="text"
-                  placeholder="搜索消息..."
-                  value={inSessionQuery}
-                  onChange={e => handleInSessionSearch(e.target.value)}
-                  className="in-session-search-input"
-                />
-                {inSessionSearching && <Loader2 size={14} className="spin" />}
-                {inSessionQuery && !inSessionSearching && (
-                  <span className="in-session-result-count">{inSessionResults.length} 条结果</span>
-                )}
-                <button className="icon-btn" onClick={handleToggleInSessionSearch}><X size={14} /></button>
-              </div>
-            )}
-            {showInSessionSearch && inSessionResults.length > 0 && (
-              <div className="in-session-results">
-                {inSessionResults.map((msg, i) => (
-                  <div key={i} className="in-session-result-item" onClick={() => {
-                    // 跳转到消息时间
-                    const ts = msg.createTime || msg.create_time
-                    if (ts) handleJumpDateSelect(new Date(ts * 1000))
-                  }}>
-                    <span className="result-sender">{msg.displayName || msg.talker || msg.username || ''}</span>
-                    <span className="result-content">{(msg.content || msg.strContent || msg.message_content || '').slice(0, 80)}</span>
-                    <span className="result-time">{msg.createTime || msg.create_time ? new Date((msg.createTime || msg.create_time) * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+              <div className="in-session-search-popup">
+                <div className="in-session-search-header">
+                  <Search size={16} className="search-icon" />
+                  <input
+                    ref={inSessionSearchRef}
+                    type="text"
+                    placeholder="搜索消息..."
+                    value={inSessionQuery}
+                    onChange={e => handleInSessionSearch(e.target.value)}
+                    className="search-input"
+                  />
+                  {inSessionSearching && <Loader2 size={16} className="spin" />}
+                  <button className="close-btn" onClick={handleToggleInSessionSearch}>
+                    <X size={16} />
+                  </button>
+                </div>
+                {inSessionQuery && (
+                  <div className="search-result-header">
+                    {inSessionSearching ? '搜索中...' : `找到 ${inSessionResults.length} 条结果`}
                   </div>
-                ))}
+                )}
+                {inSessionResults.length > 0 && (
+                  <div className="in-session-results">
+                    {inSessionResults.map((msg, i) => {
+                      const msgData = msg as any;
+                      const senderName = msgData.senderDisplayName || msgData.senderUsername || '未知';
+                      const senderAvatar = msgData.senderAvatarUrl;
+
+                      return (
+                        <div key={i} className="result-item" onClick={() => {
+                          const ts = msg.createTime || msgData.create_time;
+                          if (ts && currentSessionId) {
+                            setCurrentOffset(0);
+                            setJumpStartTime(0);
+                            setJumpEndTime(0);
+                            void loadMessages(currentSessionId, 0, ts - 1, ts + 1, false);
+                          }
+                        }}>
+                          <div className="result-header">
+                            <Avatar src={senderAvatar} name={senderName} size={32} />
+                          </div>
+                          <div className="result-content">
+                            <span className="result-sender">{senderName}</span>
+                            <span className="result-text">{(msg.content || msgData.strContent || msgData.message_content || msgData.parsedContent || '').slice(0, 80)}</span>
+                          </div>
+                          <span className="result-time">{msg.createTime || msgData.create_time ? new Date((msg.createTime || msgData.create_time) * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {inSessionQuery && !inSessionSearching && inSessionResults.length === 0 && (
+                  <div className="no-results">
+                    <MessageSquare size={32} />
+                    <p>未找到相关消息</p>
+                  </div>
+                )}
               </div>
             )}
+
             <div className={`message-content-wrapper ${hasInitialMessages ? 'loaded' : 'loading'} ${isSessionSwitching ? 'switching' : ''}`}>
               {standaloneSessionWindow && standaloneLoadStage !== 'ready' && (
                 <div className="standalone-phase-overlay" role="status" aria-live="polite">
