@@ -2796,7 +2796,9 @@ function ExportPage() {
             emojiMessages: typeof metric.emojiMessages === 'number' ? metric.emojiMessages : previous.emojiMessages,
             transferMessages: typeof metric.transferMessages === 'number' ? metric.transferMessages : previous.transferMessages,
             redPacketMessages: typeof metric.redPacketMessages === 'number' ? metric.redPacketMessages : previous.redPacketMessages,
-            callMessages: typeof metric.callMessages === 'number' ? metric.callMessages : previous.callMessages
+            callMessages: typeof metric.callMessages === 'number' ? metric.callMessages : previous.callMessages,
+            firstTimestamp: typeof metric.firstTimestamp === 'number' ? metric.firstTimestamp : previous.firstTimestamp,
+            lastTimestamp: typeof metric.lastTimestamp === 'number' ? metric.lastTimestamp : previous.lastTimestamp
           }
           if (
             previous.totalMessages === nextMetric.totalMessages &&
@@ -4033,21 +4035,42 @@ function ExportPage() {
     const normalizedSessionIds = Array.from(new Set((sessionIds || []).map(id => String(id || '').trim()).filter(Boolean)))
     if (normalizedSessionIds.length === 0) return null
 
+    const sessionRowMap = new Map<string, SessionRow>()
+    for (const session of sessions) {
+      sessionRowMap.set(session.username, session)
+    }
+
     let minTimestamp: number | undefined
     let maxTimestamp: number | undefined
-    const resolvedSessionIds = new Set<string>()
+    const resolvedSessionBounds = new Map<string, { hasMin: boolean; hasMax: boolean }>()
 
     const absorbMetric = (sessionId: string, metric?: { firstTimestamp?: number; lastTimestamp?: number } | null) => {
       if (!metric) return
       const firstTimestamp = normalizeTimestampSeconds(metric.firstTimestamp)
       const lastTimestamp = normalizeTimestampSeconds(metric.lastTimestamp)
-      if (typeof firstTimestamp !== 'number' || typeof lastTimestamp !== 'number') return
-      resolvedSessionIds.add(sessionId)
-      if (minTimestamp === undefined || firstTimestamp < minTimestamp) minTimestamp = firstTimestamp
-      if (maxTimestamp === undefined || lastTimestamp > maxTimestamp) maxTimestamp = lastTimestamp
+      if (typeof firstTimestamp !== 'number' && typeof lastTimestamp !== 'number') return
+
+      const previous = resolvedSessionBounds.get(sessionId) || { hasMin: false, hasMax: false }
+      const nextState = {
+        hasMin: previous.hasMin || typeof firstTimestamp === 'number',
+        hasMax: previous.hasMax || typeof lastTimestamp === 'number'
+      }
+      resolvedSessionBounds.set(sessionId, nextState)
+
+      if (typeof firstTimestamp === 'number' && (minTimestamp === undefined || firstTimestamp < minTimestamp)) {
+        minTimestamp = firstTimestamp
+      }
+      if (typeof lastTimestamp === 'number' && (maxTimestamp === undefined || lastTimestamp > maxTimestamp)) {
+        maxTimestamp = lastTimestamp
+      }
     }
 
     for (const sessionId of normalizedSessionIds) {
+      const sessionRow = sessionRowMap.get(sessionId)
+      absorbMetric(sessionId, {
+        firstTimestamp: undefined,
+        lastTimestamp: sessionRow?.sortTimestamp || sessionRow?.lastTimestamp
+      })
       absorbMetric(sessionId, sessionContentMetrics[sessionId])
       if (sessionDetail?.wxid === sessionId) {
         absorbMetric(sessionId, {
@@ -4068,23 +4091,37 @@ function ExportPage() {
       }
     }
 
-    const missingSessionIds = () => normalizedSessionIds.filter(sessionId => !resolvedSessionIds.has(sessionId))
+    const missingSessionIds = () => normalizedSessionIds.filter(sessionId => {
+      const resolved = resolvedSessionBounds.get(sessionId)
+      return !resolved?.hasMin || !resolved?.hasMax
+    })
+
+    const staleSessionIds = new Set<string>()
 
     if (missingSessionIds().length > 0) {
-      applyStatsResult(await window.electronAPI.chat.getExportSessionStats(
+      const cacheResult = await window.electronAPI.chat.getExportSessionStats(
         missingSessionIds(),
         { includeRelations: false, allowStaleCache: true, cacheOnly: true }
+      )
+      applyStatsResult(cacheResult)
+      for (const sessionId of cacheResult?.needsRefresh || []) {
+        staleSessionIds.add(String(sessionId || '').trim())
+      }
+    }
+
+    const sessionsNeedingFreshStats = Array.from(new Set([
+      ...missingSessionIds(),
+      ...Array.from(staleSessionIds).filter(Boolean)
+    ]))
+
+    if (sessionsNeedingFreshStats.length > 0) {
+      applyStatsResult(await window.electronAPI.chat.getExportSessionStats(
+        sessionsNeedingFreshStats,
+        { includeRelations: false }
       ))
     }
 
     if (missingSessionIds().length > 0) {
-      applyStatsResult(await window.electronAPI.chat.getExportSessionStats(
-        missingSessionIds(),
-        { includeRelations: false, allowStaleCache: true }
-      ))
-    }
-
-    if (resolvedSessionIds.size !== normalizedSessionIds.length) {
       return null
     }
     if (typeof minTimestamp !== 'number' || typeof maxTimestamp !== 'number') {
@@ -4095,7 +4132,7 @@ function ExportPage() {
       minDate: new Date(minTimestamp * 1000),
       maxDate: new Date(maxTimestamp * 1000)
     }
-  }, [applySessionMediaMetricsFromStats, sessionContentMetrics, sessionDetail])
+  }, [applySessionMediaMetricsFromStats, sessionContentMetrics, sessionDetail, sessions])
 
   const openTimeRangeDialog = useCallback(() => {
     void (async () => {
