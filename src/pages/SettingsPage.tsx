@@ -103,6 +103,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [whisperProgressData, setWhisperProgressData] = useState<{ downloaded: number; total: number; speed: number }>({ downloaded: 0, total: 0, speed: 0 })
   const [whisperModelStatus, setWhisperModelStatus] = useState<{ exists: boolean; modelPath?: string; tokensPath?: string } | null>(null)
 
+  const [httpApiToken, setHttpApiToken] = useState('')
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -110,6 +112,25 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
+
+  const generateRandomToken = async () => {
+    // 生成 32 字符的十六进制随机字符串 (16 bytes)
+    const array = new Uint8Array(16)
+    crypto.getRandomValues(array)
+    const token = Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('')
+
+    setHttpApiToken(token)
+    await configService.setHttpApiToken(token)
+    showMessage('已生成并保存新的 Access Token', true)
+  }
+
+  const clearApiToken = async () => {
+    setHttpApiToken('')
+    await configService.setHttpApiToken('')
+    showMessage('已清除 Access Token，API 将允许无鉴权访问', true)
+  }
+
+
 
   const [autoTranscribeVoice, setAutoTranscribeVoice] = useState(false)
   const [transcribeLanguages, setTranscribeLanguages] = useState<string[]>(['zh'])
@@ -191,6 +212,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }
     checkWaylandStatus()
   }, [])
+
+
 
   // 检查 Hello 可用性
   useEffect(() => {
@@ -319,6 +342,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedAuthEnabled = await window.electronAPI.auth.verifyEnabled()
       const savedAuthUseHello = await configService.getAuthUseHello()
       const savedIsLockMode = await window.electronAPI.auth.isLockMode()
+
+      const savedHttpApiToken = await configService.getHttpApiToken()
+      if (savedHttpApiToken) setHttpApiToken(savedHttpApiToken)
+
+      const savedApiPort = await configService.getHttpApiPort()
+      if (savedApiPort) setHttpApiPort(savedApiPort)
+
       setAuthEnabled(savedAuthEnabled)
       setAuthUseHello(savedAuthUseHello)
       setIsLockMode(savedIsLockMode)
@@ -360,6 +390,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       const savedAnalyticsConsent = await configService.getAnalyticsConsent()
       setAnalyticsConsent(savedAnalyticsConsent ?? false)
+
+
 
       // 如果语言列表为空，保存默认值
       if (!savedTranscribeLanguages || savedTranscribeLanguages.length === 0) {
@@ -1825,6 +1857,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     try {
       await window.electronAPI.http.stop()
       setHttpApiRunning(false)
+      await configService.setHttpApiEnabled(false)
       showMessage('API 服务已停止', true)
     } catch (e: any) {
       showMessage(`操作失败: ${e}`, false)
@@ -1842,6 +1875,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       if (result.success) {
         setHttpApiRunning(true)
         if (result.port) setHttpApiPort(result.port)
+
+        await configService.setHttpApiEnabled(true)
+        await configService.setHttpApiPort(result.port || httpApiPort)
+
         showMessage(`API 服务已启动，端口 ${result.port}`, true)
       } else {
         showMessage(`启动失败: ${result.error}`, false)
@@ -1890,15 +1927,49 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <label>服务端口</label>
         <span className="form-hint">API 服务监听的端口号（1024-65535）</span>
         <input
-          type="number"
-          className="field-input"
-          value={httpApiPort}
-          onChange={(e) => setHttpApiPort(parseInt(e.target.value, 10) || 5031)}
-          disabled={httpApiRunning}
-          style={{ width: 120 }}
-          min={1024}
-          max={65535}
+            type="number"
+            className="field-input"
+            value={httpApiPort}
+            onChange={(e) => {
+              const port = parseInt(e.target.value, 10) || 5031
+              setHttpApiPort(port)
+              scheduleConfigSave('httpApiPort', () => configService.setHttpApiPort(port))
+            }}
+            disabled={httpApiRunning}
+            style={{ width: 120 }}
+            min={1024}
+            max={65535}
         />
+      </div>
+
+      <div className="form-group">
+        <label>Access Token (鉴权凭证)</label>
+        <span className="form-hint">
+          设置后，请求头需携带 <code>Authorization: Bearer &lt;token&gt;</code>，
+          或者参数中携带 <code>?access_token=&lt;token&gt;</code>
+        </span>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+          <input
+              type="text"
+              className="field-input"
+              value={httpApiToken}
+              placeholder="留空表示不验证 Token"
+              onChange={(e) => {
+                const val = e.target.value
+                setHttpApiToken(val)
+                scheduleConfigSave('httpApiToken', () => configService.setHttpApiToken(val))
+              }}
+              style={{ flex: 1, fontFamily: 'monospace' }}
+          />
+          <button className="btn btn-secondary" onClick={generateRandomToken}>
+            <RefreshCw size={14} style={{ marginRight: 4 }} /> 随机生成
+          </button>
+          {httpApiToken && (
+              <button className="btn btn-danger" onClick={clearApiToken} title="清除 Token">
+                <Trash2 size={14} />
+              </button>
+          )}
+        </div>
       </div>
 
       {httpApiRunning && (
@@ -1956,18 +2027,18 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <span className="form-hint">外部软件连接这个 SSE 地址即可接收新消息推送；需要先开启上方 `HTTP API 服务`</span>
         <div className="api-url-display">
           <input
-            type="text"
-            className="field-input"
-            value={`http://127.0.0.1:${httpApiPort}/api/v1/push/messages`}
-            readOnly
+              type="text"
+              className="field-input"
+              value={`http://127.0.0.1:${httpApiPort}/api/v1/push/messages${httpApiToken ? `?access_token=${httpApiToken}` : ''}`}
+              readOnly
           />
           <button
-            className="btn btn-secondary"
-            onClick={() => {
-              navigator.clipboard.writeText(`http://127.0.0.1:${httpApiPort}/api/v1/push/messages`)
-              showMessage('已复制推送地址', true)
-            }}
-            title="复制"
+              className="btn btn-secondary"
+              onClick={() => {
+                navigator.clipboard.writeText(`http://127.0.0.1:${httpApiPort}/api/v1/push/messages${httpApiToken ? `?access_token=${httpApiToken}` : ''}`)
+                showMessage('已复制推送地址', true)
+              }}
+              title="复制"
           >
             <Copy size={16} />
           </button>
